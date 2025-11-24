@@ -95,6 +95,37 @@ class JEPA:
             target_param.data = self.config['tau'] * target_param.data + (1 - self.config['tau']) * param.data
 
 
-    
+    def save_checkpoint(self, filename="jepa.pth"):
+        """Save model + optimizer for exact training resumption."""
+        os.makedirs("models", exist_ok=True)
+        checkpoint = {
+            'encoder_state_dict': self.encoder.state_dict(),
+            'predictor_state_dict': self.predictor.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict()
+        }
+        save_path = os.path.join("models", filename)
+        torch.save(checkpoint, save_path)
+        print(f"[SAVE] Checkpoint saved to {save_path}")
+
+
+    def load_checkpoint(self, folder_name=None, filename="actor_critic_checkpoint.pth", load_optimizer=True):
+        """Load model + optimizer state."""
+        if folder_name is not None:
+            file_path = os.path.join(folder_name, filename)
+        else:
+            file_path = os.path.join("models", filename)
+        if not os.path.exists(file_path):
+            print(f"[LOAD] No checkpoint found at {file_path}")
+            return False
+
+        checkpoint = torch.load(file_path, map_location=self.device)
+        self.encoder.load_state_dict(checkpoint['encoder_state_dict'])
+        self.predictor.load_state_dict(checkpoint['predictor_state_dict'])
+        if load_optimizer and 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"[LOAD] Checkpoint loaded from {file_path}")
+        return True
+
+
 
 
