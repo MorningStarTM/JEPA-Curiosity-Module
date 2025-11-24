@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from G_JEPA.utils.logger import logger
-
+from G_JEPA.utils.memory import Memory
 
 
 class Encoder(nn.Module):
@@ -45,6 +45,8 @@ class JEPA:
         self.predictor = Predictor(config['pred_input_dim'], config['pred_hidden_dim'], config['pred_output_dim']).to(self.device)
         self.target_encoder = Encoder(config['encoder_input_dim'], config['encoder_hidden_dim'], config['encoder_output_dim']).to(self.device)
 
+        self.memory = Memory()
+
         # Optimizer
         self.optimizer = optim.Adam(list(self.encoder.parameters()) + list(self.predictor.parameters()), lr=config['learning_rate'])
 
@@ -67,3 +69,32 @@ class JEPA:
             predicted_next_obs = self.predictor(pred_input)
         reward = self.criterion(predicted_next_obs, target_features)
         return reward.item()
+
+
+    def learn(self):
+        obs, actions, next_obs = self.memory.sample_memory()
+
+        obs = torch.tensor(obs, dtype=torch.float32).to(self.device)
+        next_obs = torch.tensor(next_obs, dtype=torch.float32).to(self.device)
+        # we store actions as int
+        actions = F.one_hot(torch.tensor(actions, dtype=torch.long), num_classes=self.config['action_dim']).float().to(self.device)
+
+        with torch.no_grad():
+            next_obs_features = self.target_encoder(next_obs)
+
+        input_feature = torch.cat([self.encoder(obs), actions], dim=-1)
+
+        pred_next_obs = self.predictor(input_feature)
+        loss = self.criterion(pred_next_obs, next_obs_features)
+
+        return loss
+    
+
+    def soft_update(self):
+        for param, target_param in zip(self.encoder.parameters(), self.target_encoder.parameters()):
+            target_param.data = self.config['tau'] * target_param.data + (1 - self.config['tau']) * param.data
+
+
+    
+
+
