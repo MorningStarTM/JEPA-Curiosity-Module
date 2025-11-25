@@ -6,13 +6,13 @@ from typing import List, Tuple, Optional
 
 class Memory:
     def __init__(self):
-        self.states_ = []
+        self.states = []
         self.actions = []
         self.next_states = []
 
     def remember(self, state, actions, next_state):
         self.actions.append(actions)
-        self.states_.append(state)
+        self.states.append(state)
         self.next_states.append(next_state)
 
     def clear_memory(self):
@@ -21,5 +21,5 @@ class Memory:
         self.actions = []
 
     def sample_memory(self):
-        return self.states, self.next_states, self.actions
+        return self.states, self.actions, self.next_states, 
     
