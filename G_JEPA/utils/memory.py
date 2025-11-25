@@ -7,22 +7,19 @@ from typing import List, Tuple, Optional
 class Memory:
     def __init__(self):
         self.states_ = []
-        self.pred_states = []
-        self.actions_pred = []
         self.actions = []
+        self.next_states = []
 
-    def remember(self, state_, pred_state, actions, pred_actions):
+    def remember(self, state, actions, next_state):
         self.actions.append(actions)
-        self.states_.append(state_)
-        self.pred_states.append(pred_state)
-        self.actions_pred.append(pred_actions)
+        self.states_.append(state)
+        self.next_states.append(next_state)
 
     def clear_memory(self):
-        self.states_ = []
-        self.pred_states = []
-        self.actions_pred = []
+        self.states = []
+        self.next_states = []
         self.actions = []
 
     def sample_memory(self):
-        return self.states_, self.pred_states, self.actions, self.actions_pred
+        return self.states, self.next_states, self.actions
     
