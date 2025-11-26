@@ -15,6 +15,8 @@ class JepaCM:
         self.jepa_config = jepa_config
         self.actor_config = actor_config
         self.env = env
+        self.danger = 0.9
+        self.thermal_limit = self.env._thermal_limit_a
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.agent = ActorCriticUP()
@@ -35,6 +37,15 @@ class JepaCM:
         os.makedirs(self.episode_path, exist_ok=True)
         logger.info(f"Episode path : {self.episode_path}")
 
+    
+    def is_safe(self, obs):
+        
+        for ratio, limit in zip(obs.rho, self.thermal_limit):
+            # Seperate big line and small line
+            if (limit < 400.00 and ratio >= self.danger - 0.05) or ratio >= self.danger:
+                return False
+        return True
+    
 
     def train(self):
         logger.info("""======================================================= \n
@@ -49,15 +60,29 @@ class JepaCM:
             episode_total_reward = 0
 
             for t in range(self.actor_config['max_ep_len']):
-                action = self.agent(obs.to_vect())
-                obs_, reward, done, _ = self.env.step(self.converter.act(action))
+                is_safe = self.is_safe(obs)
 
-                intrinsic_reward = self.jepa.intrinsic_reward(obs.to_vect(), action, obs_.to_vect())
-                self.jepa.memory.remember(obs.to_vect(), int(action), obs_.to_vect())
+                if not is_safe:
+                    action = self.agent(obs.to_vect())
+                    grid_action = self.converter.act(action)
+                else:
+                    grid_action = self.env.action_space({})
 
-                total_reward = reward + intrinsic_reward
+                obs_, reward, done, _ = self.env.step(grid_action)
 
-                self.agent.rewards.append(total_reward)
+                
+
+                if not is_safe:
+                    intrinsic_reward = self.jepa.intrinsic_reward(obs.to_vect(), action, obs_.to_vect())
+                    self.jepa.memory.remember(obs.to_vect(), int(action), obs_.to_vect())
+
+                    total_reward = reward + intrinsic_reward
+                    self.agent.rewards.append(total_reward)
+                
+                else:
+                    total_reward = reward
+
+                
                 episode_total_reward += total_reward
                 obs = obs_
 
@@ -94,7 +119,7 @@ class JepaCM:
             # saving the model if episodes > 999 OR avg reward > 200 
             if i_episode != 0 and i_episode % 1000 == 0:
                 self.agent.save_checkpoint(optimizer=self.optimizer, filename="final_actor_critic.pt")    
-                self.jepa.save_checkpoint(filename="final_icm.pt")
+                self.jepa.save_checkpoint(filename="final_jepa.pt")
            
             
             if i_episode % 20 == 0:
