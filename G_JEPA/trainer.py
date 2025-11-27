@@ -33,6 +33,7 @@ class JepaCM:
         self.episode_rewards = []
         self.episode_lenths = []
         self.episode_reasons = []
+        self.agent_actions = []
         self.episode_path = self.actor_config['episode_path']
         os.makedirs(self.episode_path, exist_ok=True)
         logger.info(f"Episode path : {self.episode_path}")
@@ -64,6 +65,7 @@ class JepaCM:
 
                 if not is_safe:
                     action = self.agent(obs.to_vect())
+                    self.agent_actions.append(int(action))
                     grid_action = self.converter.act(action)
                 else:
                     grid_action = self.env.action_space({})
@@ -130,6 +132,7 @@ class JepaCM:
         save_episode_rewards(self.episode_rewards, save_dir="G_JEPA\\episode_reward", filename="final_actor_critic_reward.npy")
         np.save(os.path.join(self.episode_path, "final_actor_critic_lengths.npy"),
                 np.array(self.episode_lenths, dtype=np.int32)) 
+        np.save(os.path.join(self.episode_path, "actor_critic_actions.npy"), np.array(self.agent_actions, dtype=np.int32))
         logger.info(f"reward saved at G_JEPA\\episode_reward")
         self.jepa_writer.close()
 
