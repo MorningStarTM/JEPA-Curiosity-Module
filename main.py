@@ -53,4 +53,4 @@ actor_config = {
 
 
 trainer = JepaCM(env, jepa_config, actor_config)
-trainer.train()
+trainer.train(start=0, end=500)
