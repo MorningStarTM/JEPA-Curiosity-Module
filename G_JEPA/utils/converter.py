@@ -59,4 +59,4 @@ class ActionConverter:
         one_hot = torch.zeros(tensor.size(0), num_classes, device=tensor.device)
         one_hot.scatter_(1, tensor.unsqueeze(1), 1)
         
-        return one_hot
+        return one_hot    
