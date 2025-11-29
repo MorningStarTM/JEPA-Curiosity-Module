@@ -1,5 +1,6 @@
 import torch
 import os
+import re
 import numpy as np
 from G_JEPA.agents import ActorCriticUP
 from G_JEPA.jepa import JEPA
@@ -47,12 +48,20 @@ class JepaCM:
                 return False
         return True
     
+    def make_chronic_regex(self, start, end):
+        ids = "|".join(f"{i:04d}" for i in range(start, end+1))
+        return rf".*({ids}).*"
+    
 
-    def train(self):
+    def train(self, start, end):
         logger.info("""======================================================= \n
                                     Train function Invoke \n
                        =======================================================""")
         
+        regex = self.make_chronic_regex(start=start, end=end)
+        self.env.chronics_handler.set_filter(lambda p, regex=regex: re.match(regex, p) is not None)
+        self.env.chronics_handler.reset()
+
         running_reward = 0
         for i_episode in range(0, self.actor_config['episodes']):
             #logger.info(f"Episode : {i_episode}")
