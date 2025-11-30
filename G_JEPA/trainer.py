@@ -100,7 +100,7 @@ class JepaCM:
                 if done:
                     break
 
-                self.episode_rewards.append(episode_total_reward)  
+            self.episode_rewards.append(episode_total_reward)  
             self.episode_lenths.append(t + 1)
             # Updating the policy :
             self.optimizer.zero_grad()
