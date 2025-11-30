@@ -20,7 +20,7 @@ class JepaCM:
         self.thermal_limit = self.env._thermal_limit_a
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.agent = ActorCriticUP()
+        self.agent = ActorCriticUP(actor_config)
         self.agent.param_counts()
         self.jepa = JEPA(jepa_config)
 
