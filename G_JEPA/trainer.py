@@ -21,6 +21,7 @@ class JepaCM:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.agent = ActorCriticUP()
+        self.agent.param_counts()
         self.jepa = JEPA(jepa_config)
 
         self.optimizer = torch.optim.Adam(self.agent.parameters(), lr=actor_config['learning_rate'])
@@ -35,6 +36,8 @@ class JepaCM:
         self.episode_lenths = []
         self.episode_reasons = []
         self.agent_actions = []
+        self.actor_loss = []
+        self.jepa_loss = []
         self.episode_path = self.actor_config['episode_path']
         os.makedirs(self.episode_path, exist_ok=True)
         logger.info(f"Episode path : {self.episode_path}")
@@ -108,6 +111,8 @@ class JepaCM:
 
             jepa_loss = self.jepa.learn()
             policy_loss = self.agent.calculateLoss(self.actor_config['gamma'])
+            self.actor_loss.append(policy_loss)
+            self.jepa_loss.append(jepa_loss)
             total_loss = policy_loss + jepa_loss
 
             # log JEPA loss
@@ -142,6 +147,8 @@ class JepaCM:
         np.save(os.path.join(self.episode_path, "final_actor_critic_lengths.npy"),
                 np.array(self.episode_lenths, dtype=np.int32)) 
         np.save(os.path.join(self.episode_path, "actor_critic_actions.npy"), np.array(self.agent_actions, dtype=np.int32))
+        np.save(os.path.join(self.episode_path, "actor_critic_loss.npy"), np.array(self.actor_loss, dtype=np.float32))
+        np.save(os.path.join(self.episode_path, "jepa_loss.npy"), np.array(self.jepa_loss, dtype=np.float32))
         logger.info(f"reward saved at G_JEPA\\episode_reward")
         self.jepa_writer.close()
 
