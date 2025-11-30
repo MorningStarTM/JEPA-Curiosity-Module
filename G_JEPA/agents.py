@@ -10,24 +10,90 @@ from grid2op.Reward import L2RPNSandBoxScore
 import os
 from G_JEPA.utils.logger import logger
 import torch.optim as optim
+from collections import defaultdict
 
+
+
+class ResidualLinearBlock(nn.Module):
+    def __init__(self, dim, hidden_dim=None, use_layernorm=True):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = dim
+
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, dim)
+
+        self.use_layernorm = use_layernorm
+        if use_layernorm:
+            self.norm1 = nn.LayerNorm(hidden_dim)  # ← fix here
+            self.norm2 = nn.LayerNorm(dim)
+
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        residual = x
+
+        out = self.fc1(x)
+        if self.use_layernorm:
+            out = self.norm1(out)
+        out = self.act(out)
+
+        out = self.fc2(out)
+        if self.use_layernorm:
+            out = self.norm2(out)
+
+        out = out + residual
+        out = self.act(out)
+        return out
+
+
+
+class LinearResNet(nn.Module):
+    def __init__(self, in_dim=493, hidden_dim=512, num_blocks=3, out_dim=256):
+        super().__init__()
+
+        # stem: project input to hidden_dim
+        self.stem = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        # stack of residual MLP blocks
+        self.blocks = nn.Sequential(
+            *[ResidualLinearBlock(hidden_dim, hidden_dim) for _ in range(num_blocks)]
+        )
+
+        # head: project to desired output dim
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim, out_dim),
+            nn.LayerNorm(out_dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.blocks(x)
+        x = self.head(x)
+        return x
 
 
 
 
 class ActorCriticUP(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.config = config
 
-        self.affine = nn.Sequential(
-            nn.Linear(493, 512), nn.ReLU(),
-            nn.Linear(512, 1024), nn.ReLU(),
-            nn.Linear(1024, 512), nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.LayerNorm(256),                 # ← normalize hidden to tame scales
-            nn.ReLU(),
-        )
+        self.affine = LinearResNet(
+                in_dim=493,
+                hidden_dim=self.config.get('hidden_dim', 512),
+                num_blocks=self.config.get('num_blocks', 12),  
+                out_dim=256,
+            )
+
+
         self.action_layer = nn.Linear(256, 178)
         self.value_layer  = nn.Linear(256, 1)
 
@@ -45,6 +111,28 @@ class ActorCriticUP(nn.Module):
         x.clamp_(-1e6, 1e6)
         return x
 
+
+    def num_params(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    # ---------- ADD THIS ----------
+    def _human_readable(self, n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.2f}M"
+        elif n >= 1_000:
+            return f"{n / 1_000:.2f}K"
+        else:
+            return str(n)
+
+    def param_counts(model: nn.Module):
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        non_trainable = total - trainable
+
+        logger.info(f"Total params:        {total/1e6:.3f} M")
+        logger.info(f"Trainable params:    {trainable/1e6:.3f} M")
+        logger.info(f"Non-trainable params:{non_trainable/1e6:.3f} M")
+    
     def forward(self, state_np):
         x = torch.from_numpy(state_np).float().to(self.value_layer.weight.device)
         x = self._sanitize(x)
