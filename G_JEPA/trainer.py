@@ -2,6 +2,7 @@ import torch
 import os
 import re
 import numpy as np
+import random
 from G_JEPA.agents import ActorCriticUP
 from G_JEPA.jepa import JEPA
 from G_JEPA.utils.logger import logger
@@ -153,3 +154,143 @@ class JepaCM:
         self.jepa_writer.close()
 
         
+
+    def train_attacked_env(self, start, end, line2attack, max_attack_step=72):
+        """
+        Train the JEPA + ActorCritic agent on an *attacked* environment.
+
+        - First: choose a line from `line2attack` and a random attack time step.
+        - Fast-forward chronics to that step and disconnect the chosen line.
+        - Then: run the usual JEPA + RL training loop from that attacked state.
+        """
+
+        logger.info("""======================================================= \n
+                                Train_Attacked_Env function Invoke \n
+                    =======================================================""")
+
+        # keep same chronic filtering logic as in `train`
+        regex = self.make_chronic_regex(start=start, end=end)
+        self.env.chronics_handler.set_filter(lambda p, regex=regex: re.match(regex, p) is not None)
+        self.env.chronics_handler.reset()
+
+        running_reward = 0.0
+
+        for i_episode in range(self.actor_config['episodes']):
+            # --- 1) Pick attack (line + time) ----------------------------------
+            line_to_disconnect = int(random.choice(line2attack))
+            attack_step = random.randint(0, max_attack_step)
+
+            obs = self.env.reset()
+            done = False
+            episode_total_reward = 0.0
+
+            # --- 2) Fast-forward to attack_step --------------------------------
+            if attack_step > 0:
+                # go to attack_step-1, then do-nothing step to reach attack_step
+                self.env.fast_forward_chronics(attack_step - 1)
+                obs, reward, done, _ = self.env.step(self.env.action_space({}))
+                if done:
+                    # scenario already dead before attack, skip episode
+                    continue
+
+            # --- 3) Apply the line attack --------------------------------------
+            # disconnect only the chosen line, keep others unchanged
+            new_line_status_array = np.zeros_like(obs.rho, dtype=np.int32)
+            new_line_status_array[line_to_disconnect] = -1
+            attack_action = self.env.action_space({"set_line_status": new_line_status_array})
+            obs, reward, done, _ = self.env.step(attack_action)
+
+            if done:
+                # attack itself caused blackout: nothing useful to learn here
+                continue
+
+            # --- 4) RL control after attack (same logic as `train`) ------------
+            # t starts from attack_step to keep meaning of 'time' consistent
+            for t in range(attack_step, self.actor_config['max_ep_len']):
+                is_safe = self.is_safe(obs)
+
+                # Agent acts only when grid is not safe
+                if not is_safe:
+                    action = self.agent(obs.to_vect())
+                    self.agent_actions.append(int(action))
+                    grid_action = self.converter.act(action)
+                else:
+                    grid_action = self.env.action_space({})
+
+                obs_, reward, done, _ = self.env.step(grid_action)
+
+                if not is_safe:
+                    intrinsic_reward = self.jepa.intrinsic_reward(
+                        obs.to_vect(), action, obs_.to_vect()
+                    )
+                    self.jepa.memory.remember(
+                        obs.to_vect(), int(action), obs_.to_vect()
+                    )
+                    total_reward = reward + intrinsic_reward
+                    self.agent.rewards.append(total_reward)
+                else:
+                    total_reward = reward
+
+                episode_total_reward += total_reward
+                obs = obs_
+
+                if done:
+                    break
+
+            # --- 5) Update JEPA + policy (same as `train`) ----------------------
+            self.episode_rewards.append(episode_total_reward)
+            self.episode_lenths.append(t + 1)
+
+            self.optimizer.zero_grad()
+            self.jepa.optimizer.zero_grad()
+
+            jepa_loss = self.jepa.learn()
+            policy_loss = self.agent.calculateLoss(self.actor_config['gamma'])
+            self.actor_loss.append(policy_loss)
+            self.jepa_loss.append(jepa_loss)
+
+            total_loss = policy_loss + jepa_loss
+
+            # log JEPA loss
+            self.jepa_writer.add_scalar("loss/jepa", jepa_loss.item(), self.global_step)
+            self.global_step += 1
+
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.jepa.encoder.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.jepa.predictor.parameters(), 1.0)
+            self.optimizer.step()
+            self.jepa.optimizer.step()
+
+            self.jepa.soft_update()
+
+            self.agent.clearMemory()
+            self.jepa.memory.clear_memory()
+
+            # checkpointing
+            if i_episode != 0 and i_episode % 1000 == 0:
+                self.agent.save_checkpoint(optimizer=self.optimizer, filename="final_actor_critic.pt")
+                self.jepa.save_checkpoint(filename="final_jepa.pt")
+
+            if i_episode % 20 == 0:
+                running_reward = running_reward / 20 if i_episode != 0 else episode_total_reward
+                logger.info(
+                    'Attacked Episode {}\tattack_line: {}\tattack_step: {}\tlength: {}\treward: {}'.format(
+                        i_episode, line_to_disconnect, attack_step, t, episode_total_reward
+                    )
+                )
+                running_reward = 0.0
+
+        # --- 6) Save stats (same as `train`) -----------------------------------
+        save_episode_rewards(self.episode_rewards, save_dir="G_JEPA\\episode_reward",
+                            filename="final_actor_critic_reward_attacked.npy")
+        np.save(os.path.join(self.episode_path, "final_actor_critic_lengths_attacked.npy"),
+                np.array(self.episode_lenths, dtype=np.int32))
+        np.save(os.path.join(self.episode_path, "actor_critic_actions_attacked.npy"),
+                np.array(self.agent_actions, dtype=np.int32))
+        np.save(os.path.join(self.episode_path, "actor_critic_loss_attacked.npy"),
+                np.array(self.actor_loss, dtype=np.float32))
+        np.save(os.path.join(self.episode_path, "jepa_loss_attacked.npy"),
+                np.array(self.jepa_loss, dtype=np.float32))
+        logger.info("Attacked-env rewards saved at G_JEPA\\episode_reward")
+        self.jepa_writer.close()
