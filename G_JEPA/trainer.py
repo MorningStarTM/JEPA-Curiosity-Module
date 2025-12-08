@@ -112,8 +112,8 @@ class JepaCM:
 
             jepa_loss = self.jepa.learn()
             policy_loss = self.agent.calculateLoss(self.actor_config['gamma'])
-            self.actor_loss.append(policy_loss)
-            self.jepa_loss.append(jepa_loss)
+            self.actor_loss.append(policy_loss.item())
+            self.jepa_loss.append(jepa_loss.item())
             total_loss = policy_loss + jepa_loss
 
             # log JEPA loss
