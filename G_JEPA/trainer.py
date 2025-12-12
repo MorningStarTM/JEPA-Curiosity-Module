@@ -22,10 +22,23 @@ class JepaCM:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.agent = ActorCriticUP(actor_config)
+        
         self.agent.param_counts()
+
         self.jepa = JEPA(jepa_config)
+        self.jepa.print_jepa_params()
 
         self.optimizer = torch.optim.Adam(self.agent.parameters(), lr=actor_config['learning_rate'])
+
+        if actor_config['load_model']:
+            self.agent.load_checkpoint(optimizer=self.optimizer, filename=actor_config['checkpoint_path'])
+            logger.info(f"ActorCritic Model Loaded from {actor_config['checkpoint_path']}")
+        
+        if jepa_config['load_model']:
+            self.jepa.load_checkpoint(filename=jepa_config['final_jepa'])
+            logger.info(f"JEPA Model Loaded from {jepa_config['final_jepa']}")
+
+         # Tensorboard Writer
 
         log_dir = actor_config.get("log_dir", "runs/jepa")
         self.jepa_writer = SummaryWriter(log_dir=log_dir)
