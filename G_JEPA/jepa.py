@@ -35,6 +35,83 @@ class Predictor(nn.Module):
     
 
 
+class ResidualLinearBlock(nn.Module):
+    """
+    Residual MLP block:
+      x -> Linear(dim->mlp_dim) -> (LN) -> ReLU -> Linear(mlp_dim->dim) -> (LN)
+      -> +skip -> ReLU
+    """
+    def __init__(self, dim: int, mlp_dim: int = None, use_layernorm: bool = True):
+        super().__init__()
+        mlp_dim = dim if mlp_dim is None else mlp_dim
+
+        self.fc1 = nn.Linear(dim, mlp_dim)
+        self.fc2 = nn.Linear(mlp_dim, dim)
+
+        self.use_layernorm = use_layernorm
+        if use_layernorm:
+            self.norm1 = nn.LayerNorm(mlp_dim)
+            self.norm2 = nn.LayerNorm(dim)
+
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        residual = x
+
+        out = self.fc1(x)
+        if self.use_layernorm:
+            out = self.norm1(out)
+        out = self.act(out)
+
+        out = self.fc2(out)
+        if self.use_layernorm:
+            out = self.norm2(out)
+
+        out = out + residual
+        out = self.act(out)
+        return out
+
+
+class LinearResNetPredictor(nn.Module):
+    """
+    Drop-in "Predictor" replacement but deeper (num_blocks controls depth).
+
+    Flow:
+      x -> stem (in_dim->hidden_dim) -> [ResidualLinearBlock]*num_blocks
+        -> head (hidden_dim->out_dim)
+    """
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        num_blocks: int = 4,
+        mlp_dim: int = None,          # internal expansion dim inside each block
+        use_layernorm: bool = True,
+    ):
+        super().__init__()
+        mlp_dim = hidden_dim if mlp_dim is None else mlp_dim
+
+        self.stem = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim) if use_layernorm else nn.Identity(),
+            nn.ReLU(inplace=True),
+        )
+
+        self.blocks = nn.Sequential(
+            *[ResidualLinearBlock(hidden_dim, mlp_dim, use_layernorm) for _ in range(num_blocks)]
+        )
+
+        self.head = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.blocks(x)
+        x = self.head(x)
+        return x
+
+
+
 class JEPA:
     def __init__(self, config):
         self.config = config
@@ -43,6 +120,11 @@ class JEPA:
         # Initialize encoder and predictor
         self.encoder = Encoder(config['encoder_input_dim'], config['encoder_hidden_dim'], config['encoder_output_dim']).to(self.device)
         self.predictor = Predictor(config['pred_input_dim'], config['pred_hidden_dim'], config['pred_output_dim']).to(self.device)
+        self.predictor = LinearResNetPredictor(input_dim=config['pred_input_dim'], 
+                                               hidden_dim=config['pred_hidden_dim'], 
+                                               output_dim=config['pred_output_dim'], 
+                                               num_blocks=config['pred_num_blocks'], 
+                                               mlp_dim=config['pred_mlp_dim'])
         self.target_encoder = Encoder(config['encoder_input_dim'], config['encoder_hidden_dim'], config['encoder_output_dim']).to(self.device)
 
         self.memory = Memory()
@@ -53,7 +135,28 @@ class JEPA:
         # Loss function
         self.criterion = nn.MSELoss()
 
-        
+    def count_trainable_params(self, model):
+        """
+        Returns total number of trainable parameters.
+        """
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+    def print_jepa_params(self):
+        encoder_params = self.count_trainable_params(self.encoder)
+        predictor_params = self.count_trainable_params(self.predictor)
+        target_encoder_params = self.count_trainable_params(self.target_encoder)
+
+        total_params = encoder_params + predictor_params + target_encoder_params
+
+        logger.info("========== JEPA Trainable Parameters ==========")
+        logger.info(f"Encoder        : {encoder_params / 1e6:.3f} M")
+        logger.info(f"Predictor      : {predictor_params / 1e6:.3f} M")
+        logger.info(f"Target Encoder : {target_encoder_params / 1e6:.3f} M")
+        logger.info("-----------------------------------------------")
+        logger.info(f"TOTAL          : {total_params / 1e6:.3f} M")
+        logger.info("===============================================")
+
     
     def intrinsic_reward(self, obs, action, next_obs):
         obs = torch.tensor(obs, dtype=torch.float32).to(self.device)
@@ -105,7 +208,7 @@ class JEPA:
         }
         save_path = os.path.join("models", filename)
         torch.save(checkpoint, save_path)
-        print(f"[SAVE] Checkpoint saved to {save_path}")
+        logger.info(f"[SAVE] Checkpoint saved to {save_path}")
 
 
     def load_checkpoint(self, folder_name=None, filename="actor_critic_checkpoint.pth", load_optimizer=True):
@@ -115,7 +218,7 @@ class JEPA:
         else:
             file_path = os.path.join("models", filename)
         if not os.path.exists(file_path):
-            print(f"[LOAD] No checkpoint found at {file_path}")
+            logger.info(f"[LOAD] No checkpoint found at {file_path}")
             return False
 
         checkpoint = torch.load(file_path, map_location=self.device)
@@ -123,7 +226,7 @@ class JEPA:
         self.predictor.load_state_dict(checkpoint['predictor_state_dict'])
         if load_optimizer and 'optimizer_state_dict' in checkpoint:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        print(f"[LOAD] Checkpoint loaded from {file_path}")
+        logger.info(f"[LOAD] Checkpoint loaded from {file_path}")
         return True
 
 
