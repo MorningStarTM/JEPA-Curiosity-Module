@@ -124,7 +124,7 @@ class JEPA:
                                                hidden_dim=config['pred_hidden_dim'], 
                                                output_dim=config['pred_output_dim'], 
                                                num_blocks=config['pred_num_blocks'], 
-                                               mlp_dim=config['pred_mlp_dim'])
+                                               mlp_dim=config['pred_mlp_dim']).to(self.device)
         self.target_encoder = Encoder(config['encoder_input_dim'], config['encoder_hidden_dim'], config['encoder_output_dim']).to(self.device)
 
         self.memory = Memory()
