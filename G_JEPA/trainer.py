@@ -31,12 +31,12 @@ class JepaCM:
         self.optimizer = torch.optim.Adam(self.agent.parameters(), lr=actor_config['learning_rate'])
 
         if actor_config['load_model']:
-            self.agent.load_checkpoint(optimizer=self.optimizer, filename=actor_config['checkpoint_path'])
-            logger.info(f"ActorCritic Model Loaded from {actor_config['checkpoint_path']}")
+            self.agent.load_checkpoint(optimizer=self.optimizer, folder_name=actor_config['actor_checkpoint_path'], filename=actor_config['checkpoint_path'])
+            logger.info(f"ActorCritic Model Loaded from {jepa_config['actor_checkpoint_path']}/{actor_config['checkpoint_path']}")
         
         if jepa_config['load_model']:
-            self.jepa.load_checkpoint(filename=jepa_config['final_jepa'])
-            logger.info(f"JEPA Model Loaded from {jepa_config['final_jepa']}")
+            self.jepa.load_checkpoint(folder_name=jepa_config['jepa_checkpoint_path'], filename=jepa_config['final_jepa'])
+            logger.info(f"JEPA Model Loaded from {jepa_config['jepa_checkpoint_path']}/{jepa_config['final_jepa']}")
 
          # Tensorboard Writer
 
