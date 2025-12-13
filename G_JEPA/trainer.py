@@ -32,7 +32,7 @@ class JepaCM:
 
         if actor_config['load_model']:
             self.agent.load_checkpoint(optimizer=self.optimizer, folder_name=actor_config['actor_checkpoint_path'], filename=actor_config['checkpoint_path'])
-            logger.info(f"ActorCritic Model Loaded from {jepa_config['actor_checkpoint_path']}/{actor_config['checkpoint_path']}")
+            logger.info(f"ActorCritic Model Loaded from {actor_config['actor_checkpoint_path']}/{actor_config['checkpoint_path']}")
         
         if jepa_config['load_model']:
             self.jepa.load_checkpoint(folder_name=jepa_config['jepa_checkpoint_path'], filename=jepa_config['final_jepa'])
