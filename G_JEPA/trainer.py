@@ -358,7 +358,6 @@ class ActorCriticTrainer:
         running_reward = 0
         actions = []
         for i_episode in range(0, self.actor_config['episodes']):
-            logger.info(f"Episode : {i_episode}")
             obs = self.env.reset()
             done = False
             episode_total_reward = 0
@@ -383,7 +382,7 @@ class ActorCriticTrainer:
                 if done:
                     break
 
-            logger.info(f"Episode {i_episode} reward: {episode_total_reward}")  
+            
             self.episode_rewards.append(episode_total_reward)  
             self.episode_lenths.append(t + 1)
             # Updating the policy :
