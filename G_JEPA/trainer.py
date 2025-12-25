@@ -307,3 +307,111 @@ class JepaCM:
                 np.array(self.jepa_loss, dtype=np.float32))
         logger.info("Attacked-env rewards saved at G_JEPA\\episode_reward")
         self.jepa_writer.close()
+
+
+
+
+
+
+
+class ActorCriticTrainer:
+    def __init__(self, env, actor_config):
+        self.actor_config = actor_config
+        self.env = env
+        self.danger = 0.9
+        self.thermal_limit = self.env._thermal_limit_a
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.agent = ActorCriticUP(actor_config)
+        
+        self.agent.param_counts()
+
+        self.optimizer = torch.optim.Adam(self.agent.parameters(), lr=actor_config['learning_rate'])
+
+        if actor_config['load_model']:
+            self.agent.load_checkpoint(optimizer=self.optimizer, folder_name=actor_config['actor_checkpoint_path'], filename=actor_config['checkpoint_path'])
+            logger.info(f"ActorCritic Model Loaded from {actor_config['actor_checkpoint_path']}/{actor_config['checkpoint_path']}")
+
+        self.converter = ActionConverter(self.env)
+
+        self.episode_rewards = []
+        self.episode_lenths = []
+        self.episode_reasons = []
+        self.agent_actions = []
+        self.actor_loss = []
+        self.episode_path = self.actor_config['episode_path']
+        os.makedirs(self.episode_path, exist_ok=True)
+        logger.info(f"Episode path : {self.episode_path}")
+
+
+
+    def is_safe(self, obs):
+        
+        for ratio, limit in zip(obs.rho, self.thermal_limit):
+            # Seperate big line and small line
+            if (limit < 400.00 and ratio >= self.danger - 0.05) or ratio >= self.danger:
+                return False
+        return True
+    
+    
+    def train(self):
+        running_reward = 0
+        actions = []
+        for i_episode in range(0, self.actor_config['episodes']):
+            logger.info(f"Episode : {i_episode}")
+            obs = self.env.reset()
+            done = False
+            episode_total_reward = 0
+
+            for t in range(self.actor_config['max_ep_len']):
+                is_safe = self.is_safe(obs)
+
+                if not is_safe:
+                    action = self.agent(obs.to_vect())
+                    actions.append(action)
+                    grid_action = self.converter.act(action)
+                else:
+                    grid_action = self.env.action_space({})
+                obs_, reward, done, _ = self.env.step(grid_action)
+
+                if not is_safe:
+                    self.agent.rewards.append(reward)
+
+                episode_total_reward += reward
+                obs = obs_
+
+                if done:
+                    break
+
+            logger.info(f"Episode {i_episode} reward: {episode_total_reward}")  
+            self.episode_rewards.append(episode_total_reward)  
+            self.episode_lenths.append(t + 1)
+            # Updating the policy :
+            self.optimizer.zero_grad()
+            loss = self.agent.calculateLoss(self.actor_config['gamma'])
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.agent.parameters(), max_norm=0.5)
+            self.optimizer.step()        
+            self.agent.clearMemory()
+
+            # saving the model if episodes > 999 OR avg reward > 200 
+            if i_episode != 0 and i_episode % 1000 == 0:
+                self.agent.save_checkpoint(optimizer=self.optimizer, filename="fine_tuned_actor_critic.pt")    
+           
+            
+            if i_episode % 20 == 0:
+                running_reward = running_reward/20
+                logger.info('Episode {}\tlength: {}\treward: {}'.format(i_episode, t, episode_total_reward))
+                running_reward = 0
+            
+            survival_steps = t + 1          # because t is 0-indexed
+            self.episode_lenths.append(survival_steps)
+
+        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="fine_tuned_actor_critic_reward.npy")
+        np.save(os.path.join(self.episode_path, "fine_tuned_actor_critic_lengths.npy"),
+                np.array(self.episode_lenths, dtype=np.int32)) 
+        np.save(os.path.join(self.episode_path, "fine_tuned_actor_critic_actions.npy"), np.array(actions, dtype=np.int32))
+        np.save(os.path.join(self.episode_path, "fine_tuned_actor_critic_loss.npy"), np.array(self.actor_loss, dtype=np.float32))
+        logger.info(f"reward saved at ICM\\episode_reward")
+        os.makedirs("ICM\\episode_reward", exist_ok=True)
+        np.save("ICM\\episode_reward\\fine_tuned_actor_critic_steps.npy", np.array(self.episode_lenths, dtype=int))
