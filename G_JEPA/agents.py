@@ -87,14 +87,14 @@ class ActorCriticUP(nn.Module):
         self.config = config
 
         self.affine = LinearResNet(
-                in_dim=493,
+                in_dim=self.config.get('input_dim', 192),
                 hidden_dim=self.config.get('hidden_dim', 512),
                 num_blocks=self.config.get('num_blocks', 12),  
                 out_dim=256,
             )
 
 
-        self.action_layer = nn.Linear(256, 178)
+        self.action_layer = nn.Linear(256, self.config.get('action_dim', 58))
         self.value_layer  = nn.Linear(256, 1)
 
         self.logprobs, self.state_values, self.rewards = [], [], []
@@ -162,8 +162,8 @@ class ActorCriticUP(nn.Module):
         self.state_values.append(self.value_layer(h).squeeze(-1))
 
         return action.item()
-
     
+
     def calculateLoss(self, gamma=0.99, value_coef=0.5, entropy_coef=0.01):
         # discounted returns
         returns = []

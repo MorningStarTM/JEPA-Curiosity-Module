@@ -69,14 +69,39 @@ class JepaCM:
         ids = "|".join(f"{i:04d}" for i in range(start, end+1))
         return rf".*({ids}).*"
     
+    def keep_only_chronics_by_index(self, start_idx=0, end_idx=10):
+        """
+        Returns a filter function that keeps only chronics within the specified index range.
+        
+        Parameters:
+        -----------
+        start_idx : int
+            Starting index (inclusive)
+        end_idx : int
+            Ending index (inclusive)
+        
+        Returns:
+        --------
+        function
+            A filter function compatible with env.chronics_handler.set_filter()
+        """
+        counter = [0]  # Use list to maintain state across calls
+        
+        def filter_func(chron_name):
+            idx = counter[0]
+            counter[0] += 1
+            return start_idx <= idx <= end_idx
+        
+        return filter_func
+
 
     def train(self, start, end):
         logger.info("""======================================================= \n
                                     Train function Invoke \n
                        =======================================================""")
         
-        regex = self.make_chronic_regex(start=start, end=end)
-        self.env.chronics_handler.set_filter(lambda p, regex=regex: re.match(regex, p) is not None)
+        #regex = self.make_chronic_regex(start=start, end=end)
+        self.env.chronics_handler.set_filter(self.keep_only_chronics_by_index(start, end))
         self.env.chronics_handler.reset()
 
         running_reward = 0
@@ -148,8 +173,8 @@ class JepaCM:
 
             # saving the model if episodes > 999 OR avg reward > 200 
             if i_episode != 0 and i_episode % 1000 == 0:
-                self.agent.save_checkpoint(optimizer=self.optimizer, filename="final_actor_critic.pt")    
-                self.jepa.save_checkpoint(filename="final_jepa.pt")
+                self.agent.save_checkpoint(optimizer=self.optimizer, filename=self.actor_config['checkpoint_path'])    
+                self.jepa.save_checkpoint(filename=self.jepa_config['final_jepa'])
            
             
             if i_episode % 20 == 0:
