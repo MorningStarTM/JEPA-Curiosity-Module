@@ -100,8 +100,8 @@ class JepaCM:
                                     Train function Invoke \n
                        =======================================================""")
         
-        #regex = self.make_chronic_regex(start=start, end=end)
-        self.env.chronics_handler.set_filter(self.keep_only_chronics_by_index(start, end))
+        regex = self.make_chronic_regex(start=start, end=end)
+        self.env.chronics_handler.set_filter(lambda p, regex=regex: re.match(regex, p) is not None)
         self.env.chronics_handler.reset()
 
         running_reward = 0
