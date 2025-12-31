@@ -359,6 +359,62 @@ class ActorCriticTrainer:
         logger.info(f"Episode path : {self.episode_path}")
 
 
+    def pick_sub_rule_based(self, masked_sorted_sub, action_space, obs):
+        """
+        Selects a substation to act upon based on line utilization (rho values).
+        Implements the CAPA policy: prioritizes substations with high line utilization.
+        
+        Args:
+            masked_sorted_sub: Array of substation IDs to consider
+            action_space: Grid2op action space object with line_or_to_subid and line_ex_to_subid
+            obs: Current observation with rho (line utilization) data
+        
+        Returns:
+            sub_2_act: The selected substation ID
+        """
+        
+        # 1. Initialize Substation Line Information
+        sub_line_or = []  # Indices of outgoing lines for each substation
+        sub_line_ex = []  # Indices of incoming lines for each substation
+        
+        # Build line mappings for each substation
+        for sub in masked_sorted_sub:
+            sub_line_or.append(
+                np.flatnonzero(action_space.line_or_to_subid == sub)
+            )
+            sub_line_ex.append(
+                np.flatnonzero(action_space.line_ex_to_subid == sub)
+            )
+        
+        # 2. Calculate rho values for all substations
+        rhos = []
+        for sub in masked_sorted_sub:
+            sub_i = np.flatnonzero(masked_sorted_sub == sub).squeeze()
+            
+            # Combine outgoing and incoming line rho values
+            rho = np.append(
+                obs.rho[sub_line_or[sub_i]].copy(),
+                obs.rho[sub_line_ex[sub_i]].copy(),
+            )
+            
+            # Replace zero rho values with 3 (prioritize zero utilization)
+            rho[rho == 0] = 3
+            rho_max = rho.max()
+            rho_mean = rho.mean()
+            rhos.append((rho_max, rho_mean))
+        
+        # 3. Sort substations by priority (max rho first, then mean rho)
+        order = sorted(
+            zip(masked_sorted_sub, rhos), 
+            key=lambda x: (-x[1][0], -x[1][1])
+        )
+        
+        # 4. Extract and return the highest priority substation
+        sub_2_act = list(list(zip(*order))[0])[0]
+        
+        return sub_2_act
+    
+
 
     def is_safe(self, obs):
         
