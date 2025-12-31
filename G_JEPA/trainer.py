@@ -414,7 +414,13 @@ class ActorCriticTrainer:
         
         return sub_2_act
     
+    
+    def find_action_ids(self, sub_id):
+        actions = self.env.action_space.get_all_unitary_topologies_set(self.env.action_space, sub_id=sub_id)
 
+        idxs = [self.converter.actions.index(a) for a in actions]
+        return idxs
+    
 
     def is_safe(self, obs):
         
