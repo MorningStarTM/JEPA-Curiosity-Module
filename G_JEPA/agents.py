@@ -14,6 +14,7 @@ from collections import defaultdict
 
 
 
+
 class ResidualLinearBlock(nn.Module):
     def __init__(self, dim, hidden_dim=None, use_layernorm=True):
         super().__init__()
@@ -85,6 +86,7 @@ class ActorCriticUP(nn.Module):
         super().__init__()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config
+        self.NEG_INF = -1e9
 
         self.affine = LinearResNet(
                 in_dim=self.config.get('input_dim', 192),
@@ -162,6 +164,67 @@ class ActorCriticUP(nn.Module):
         self.state_values.append(self.value_layer(h).squeeze(-1))
 
         return action.item()
+    
+
+
+    def act_top_k(self, state_np, allowed_action_ids):
+        """
+        Sample an action ONLY from a subset of allowed action indices.
+
+        Args:
+            state_np: np.ndarray, shape (F,) or (B,F)
+            allowed_action_ids: list/tuple/1D tensor of allowed global action indices
+                e.g. [160, 161, 162]  (optionally include do-nothing id)
+
+        Returns:
+            int: sampled global action id (one of allowed_action_ids)
+        """
+        x = torch.from_numpy(state_np).float().to(self.value_layer.weight.device)
+        x = self._sanitize(x)
+
+        if x.dim() == 1:                      # ensure [B, F]
+            x = x.unsqueeze(0)
+
+        h = self.affine(x)
+        h = torch.nan_to_num(h)
+
+        logits = self.action_layer(h)         # (B, action_dim)
+        logits = torch.nan_to_num(logits)
+        logits = logits - logits.max(dim=-1, keepdim=True).values
+
+        # --------- TOP-K / MASKING ----------
+        action_dim = logits.size(-1)
+        device = logits.device
+
+        if not torch.is_tensor(allowed_action_ids):
+            allowed_action_ids = torch.tensor(allowed_action_ids, dtype=torch.long, device=device)
+        else:
+            allowed_action_ids = allowed_action_ids.to(device=device, dtype=torch.long)
+
+        # Build mask: True for allowed actions
+        allowed_mask = torch.zeros(action_dim, dtype=torch.bool, device=device)
+        allowed_mask[allowed_action_ids] = True
+
+        # Expand mask to batch
+        allowed_mask_b = allowed_mask.unsqueeze(0).expand_as(logits)
+
+        # Mask out disallowed actions
+        masked_logits = logits.masked_fill(~allowed_mask_b, self.NEG_INF)
+
+        probs = torch.softmax(masked_logits, dim=-1)
+
+        # Safety: if something went wrong (e.g., empty allowed set), fallback to original probs
+        if (not torch.isfinite(probs).all()) or torch.any(probs.sum(dim=-1) == 0):
+            probs = torch.softmax(logits, dim=-1)
+
+        dist = Categorical(probs=probs)
+        action = dist.sample()  # (B,)
+
+        self.logprobs.append(dist.log_prob(action).squeeze(-1))
+        self.state_values.append(self.value_layer(h).squeeze(-1))
+
+        return action.item()
+
     
 
     def calculateLoss(self, gamma=0.99, value_coef=0.5, entropy_coef=0.01):
