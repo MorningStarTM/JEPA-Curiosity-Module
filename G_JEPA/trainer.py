@@ -8,7 +8,6 @@ from G_JEPA.jepa import JEPA
 from G_JEPA.utils.logger import logger
 from G_JEPA.utils.converter import ActionConverter
 from G_JEPA.utils.utils import save_episode_rewards
-from torch.utils.tensorboard import SummaryWriter
 
 
 
@@ -41,8 +40,6 @@ class JepaCM:
          # Tensorboard Writer
 
         log_dir = actor_config.get("log_dir", "runs/jepa")
-        self.jepa_writer = SummaryWriter(log_dir=log_dir)
-        self.global_step = 0
 
         self.converter = ActionConverter(self.env)
 
@@ -155,9 +152,6 @@ class JepaCM:
             total_loss = policy_loss + jepa_loss
 
             # log JEPA loss
-            self.jepa_writer.add_scalar("loss/jepa", jepa_loss.item(), self.global_step)
-            self.global_step += 1
-
 
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
@@ -189,7 +183,6 @@ class JepaCM:
         np.save(os.path.join(self.episode_path, "actor_critic_loss.npy"), np.array(self.actor_loss, dtype=np.float32))
         np.save(os.path.join(self.episode_path, "jepa_loss.npy"), np.array(self.jepa_loss, dtype=np.float32))
         logger.info(f"reward saved at G_JEPA\\episode_reward")
-        self.jepa_writer.close()
 
         
 
@@ -258,9 +251,9 @@ class JepaCM:
                 obs_, reward, done, _ = self.env.step(grid_action)
 
                 if not is_safe:
-                    intrinsic_reward = self.jepa.intrinsic_reward(
-                        obs.to_vect(), action, obs_.to_vect()
-                    )
+                    with torch.no_grad():
+                        intrinsic_reward = self.jepa.intrinsic_reward(obs.to_vect(), action, obs_.to_vect())
+
                     self.jepa.memory.remember(
                         obs.to_vect(), int(action), obs_.to_vect()
                     )
@@ -284,14 +277,11 @@ class JepaCM:
 
             jepa_loss = self.jepa.learn()
             policy_loss = self.agent.calculateLoss(self.actor_config['gamma'])
-            self.actor_loss.append(policy_loss)
-            self.jepa_loss.append(jepa_loss)
+            self.actor_loss.append(float(policy_loss.detach().cpu().item()))
+            self.jepa_loss.append(float(jepa_loss.detach().cpu().item()))
 
             total_loss = policy_loss + jepa_loss
 
-            # log JEPA loss
-            self.jepa_writer.add_scalar("loss/jepa", jepa_loss.item(), self.global_step)
-            self.global_step += 1
 
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
@@ -331,7 +321,7 @@ class JepaCM:
         np.save(os.path.join(self.episode_path, "jepa_loss_attacked.npy"),
                 np.array(self.jepa_loss, dtype=np.float32))
         logger.info("Attacked-env rewards saved at G_JEPA\\episode_reward")
-        self.jepa_writer.close()
+        
 
 
 
