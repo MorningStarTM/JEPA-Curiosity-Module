@@ -1,3 +1,5 @@
+
+from __future__ import annotations
 import torch
 import os
 import re
@@ -8,7 +10,9 @@ from G_JEPA.jepa import JEPA
 from G_JEPA.utils.logger import logger
 from G_JEPA.utils.converter import ActionConverter
 from G_JEPA.utils.utils import save_episode_rewards
+from typing import List, Optional, Any, Tuple
 
+import pandas as pd
 
 
 class JepaCM:
@@ -415,9 +419,63 @@ class ActorCriticTrainer:
         
         return sub_2_act
     
-    
+
+
+    def get_connected_substations(
+        self,
+        env,
+        sub_id: int,
+        return_line_ids: bool = False,
+    ) -> List[int] | Tuple[List[int], np.ndarray]:
+        """
+        Returns the unique substation ids directly connected to `sub_id` by at least one powerline.
+
+        Uses the immutable wiring description:
+        - env.line_or_to_subid[line_id] -> origin substation of that line
+        - env.line_ex_to_subid[line_id] -> extremity substation of that line
+
+        Parameters
+        ----------
+        env : grid2op.Environment.Environment (or anything with line_or_to_subid / line_ex_to_subid)
+        sub_id : int
+            Substation id to query.
+        return_line_ids : bool
+            If True, also returns the ids of lines incident to `sub_id`.
+
+        Returns
+        -------
+        neighbors : List[int]
+            Sorted unique neighbor substation ids.
+        (neighbors, incident_line_ids) : (List[int], np.ndarray)
+            If return_line_ids=True.
+        """
+        or_sub = np.asarray(env.line_or_to_subid)
+        ex_sub = np.asarray(env.line_ex_to_subid)
+
+        # lines where sub_id is at origin or extremity
+        mask_or = (or_sub == sub_id)
+        mask_ex = (ex_sub == sub_id)
+
+        incident_line_ids = np.flatnonzero(mask_or | mask_ex)
+
+        # opposite endpoints are the neighboring substations
+        neigh_from_or = ex_sub[mask_or]   # sub_id is origin => neighbor is extremity
+        neigh_from_ex = or_sub[mask_ex]   # sub_id is extremity => neighbor is origin
+
+        neighbors = np.unique(np.concatenate([neigh_from_or, neigh_from_ex]))
+        neighbors = neighbors[neighbors != sub_id]  # just in case (usually unnecessary)
+        neighbors = np.sort(neighbors).tolist()
+
+        if return_line_ids:
+            return neighbors, incident_line_ids
+        return neighbors
+
+
+
     def find_action_ids(self, sub_id):
-        actions = self.env.action_space.get_all_unitary_topologies_set(self.env.action_space, sub_id=sub_id)
+        actions = []
+        for i in sub_id:
+            actions += self.env.action_space.get_all_unitary_topologies_set(self.env.action_space, sub_id=i)
 
         idxs = [self.converter.actions.index(a) for a in actions]
         return idxs
@@ -435,6 +493,8 @@ class ActorCriticTrainer:
     def train(self):
         running_reward = 0
         actions = []
+        step_logs = []
+
         for i_episode in range(0, self.actor_config['episodes']):
             obs = self.env.reset()
             done = False
@@ -443,20 +503,75 @@ class ActorCriticTrainer:
             for t in range(self.actor_config['max_ep_len']):
                 is_safe = self.is_safe(obs)
 
+                acted_or_noop = "noop"
+                chosen_action_id = -1
+                sub_id0 = -1
+
                 if not is_safe:
                     sub_id = self.pick_sub_rule_based(self.sub_masks, self.env.action_space, obs)
-                    allowed_actions = self.find_action_ids(sub_id=sub_id)
+                    sub_id0 = int(sub_id)
+
+                    with_neighbors, _ = self.get_connected_substations(env=self.env, sub_id=sub_id, return_line_ids=True)
+                    allowed_actions = self.find_action_ids(sub_id=with_neighbors)
                     action = self.agent.act_top_k(state_np=obs.to_vect(), allowed_action_ids=allowed_actions)
                     actions.append(action)
+                    chosen_action_id = int(action)
+                    acted_or_noop = "agent"
+
                     grid_action = self.converter.act(action)
                 else:
                     grid_action = self.env.action_space({})
-                obs_, reward, done, _ = self.env.step(grid_action)
+                obs_, reward, done, info = self.env.step(grid_action)
 
                 if not is_safe:
                     self.agent.rewards.append(reward)
 
                 episode_total_reward += reward
+                rootcause_blackout = int(done)
+                rootcause_kind = ""
+                rootcause_id = -1
+
+                if isinstance(info, dict):
+                    # common-ish patterns
+                    if "exception" in info and info["exception"] is not None:
+                        rootcause_kind = str(info["exception"])
+                    elif "reason" in info and info["reason"] is not None:
+                        rootcause_kind = str(info["reason"])
+                    elif "cause" in info and info["cause"] is not None:
+                        rootcause_kind = str(info["cause"])
+                    elif "opponent_attack_line" in info and info["opponent_attack_line"] is not None:
+                        rootcause_kind = "opponent_attack_line"
+                        try:
+                            rootcause_id = int(info["opponent_attack_line"])
+                        except Exception:
+                            rootcause_id = -1
+
+                    # id-like fields (line id / exception id etc.)
+                    for k in ["exception_id", "line_id", "id", "disc_lines", "disconnected_lines"]:
+                        if k in info and info[k] is not None:
+                            try:
+                                val = info[k]
+                                # if list/array, take first
+                                if isinstance(val, (list, tuple, np.ndarray)) and len(val) > 0:
+                                    rootcause_id = int(val[0])
+                                else:
+                                    rootcause_id = int(val)
+                                break
+                            except Exception:
+                                pass
+
+                step_logs.append({
+                    "episode_id": int(i_episode),
+                    "t": int(t),
+                    "acted_or_noop": acted_or_noop,     # "agent" or "noop"
+                    "action_id": int(chosen_action_id), # -1 for noop
+                    "rootcause_blackout": int(rootcause_blackout),
+                    "rootcause_kind": rootcause_kind,
+                    "rootcause_id": int(rootcause_id),
+                    "sub_id0": int(sub_id0),            # -1 for noop steps
+                })
+
+
                 obs = obs_
 
                 if done:
@@ -469,6 +584,7 @@ class ActorCriticTrainer:
             self.optimizer.zero_grad()
             loss = self.agent.calculateLoss(self.actor_config['gamma'])
             loss.backward()
+            self.actor_loss.append(loss.item())
             torch.nn.utils.clip_grad_norm_(self.agent.parameters(), max_norm=0.5)
             self.optimizer.step()        
             self.agent.clearMemory()
@@ -494,3 +610,10 @@ class ActorCriticTrainer:
         logger.info(f"reward saved at ICM\\episode_reward")
         os.makedirs("ICM\\episode_reward", exist_ok=True)
         np.save("ICM\\episode_reward\\fine_tuned_actor_critic_steps.npy", np.array(self.episode_lenths, dtype=int))
+
+
+        os.makedirs(self.episode_path, exist_ok=True)
+        df_logs = pd.DataFrame(step_logs)
+        csv_path = os.path.join(self.episode_path, "fine_tuned_actor_critic_action_log.csv")
+        df_logs.to_csv(csv_path, index=False)
+        logger.info(f"action log csv saved at {csv_path}")
