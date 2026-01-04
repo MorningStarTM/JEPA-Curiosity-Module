@@ -348,6 +348,7 @@ class ActorCriticTrainer:
             logger.info(f"ActorCritic Model Loaded from {actor_config['actor_checkpoint_path']}/{actor_config['checkpoint_path']}")
 
         self.converter = ActionConverter(self.env)
+        self.sub_masks = np.array([0,1,2,3,4,5,6,8,9,10,11,12,13])
 
         self.episode_rewards = []
         self.episode_lenths = []
@@ -443,7 +444,9 @@ class ActorCriticTrainer:
                 is_safe = self.is_safe(obs)
 
                 if not is_safe:
-                    action = self.agent(obs.to_vect())
+                    sub_id = self.pick_sub_rule_based(self.sub_masks, self.env.action_space, obs)
+                    allowed_actions = self.find_action_ids(sub_id=sub_id)
+                    action = self.agent.act_top_k(state_np=obs.to_vect(), allowed_action_ids=allowed_actions)
                     actions.append(action)
                     grid_action = self.converter.act(action)
                 else:
