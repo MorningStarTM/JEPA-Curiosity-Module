@@ -489,12 +489,21 @@ class ActorCriticTrainer:
                 return False
         return True
     
+    def make_chronic_regex(self, start, end):
+        ids = "|".join(f"{i:04d}" for i in range(start, end+1))
+        return rf".*({ids}).*"
     
-    def train(self):
+    
+    def train(self, start=0, end=100):
         running_reward = 0
         actions = []
         step_logs = []
 
+        regex = self.make_chronic_regex(start=start, end=end)
+        self.env.chronics_handler.set_filter(lambda p, regex=regex: re.match(regex, p) is not None)
+        self.env.chronics_handler.reset()
+
+        running_reward = 0
         for i_episode in range(0, self.actor_config['episodes']):
             obs = self.env.reset()
             done = False
@@ -596,7 +605,7 @@ class ActorCriticTrainer:
             
             if i_episode % 20 == 0:
                 running_reward = running_reward/20
-                logger.info('Episode {}\tlength: {}\treward: {}'.format(i_episode, t, episode_total_reward))
+                logger.info('Episode {}\tlength: {}\treward: {}\tEpisode_ID: {}'.format(i_episode, t, episode_total_reward, self.env.chronics_handler.get_name()))
                 running_reward = 0
             
             survival_steps = t + 1          # because t is 0-indexed
@@ -616,4 +625,4 @@ class ActorCriticTrainer:
         df_logs = pd.DataFrame(step_logs)
         csv_path = os.path.join(self.episode_path, "fine_tuned_actor_critic_action_log.csv")
         df_logs.to_csv(csv_path, index=False)
-        logger.info(f"action log csv saved at {csv_path}")
+        logger.info(f"action log csv saved at {csv_path}")  
