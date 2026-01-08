@@ -3,6 +3,9 @@ import numpy as np
 from typing import Tuple, List, Dict, Optional
 import json
 from G_JEPA.utils.logger import logger
+from G_JEPA.utils.converter import ActionConverter
+from G_JEPA.trainer import ActorCriticTrainer
+
 
 
 
@@ -116,15 +119,18 @@ def select_chronics(env_path, case, eval=False):
     return dn_ffw, ep_infos
 
 
+
+
 def evaluate_agent(
     agent,
     test_env,
     json_path: str,
     chronics: List,
+    trainer:ActorCriticTrainer,
     max_ffw: int = 26,  # Default for case 14
     path: str = "./results",
     sample: bool = False,
-    compute_episode_score_fn=None,
+    compute_episode_score_fn=compute_episode_score,
 ) -> Tuple[Dict, List, List]:
     """
     Evaluates a trained RL agent across multiple power grid scenarios (chronics).
@@ -153,6 +159,7 @@ def evaluate_agent(
     result = {}
     lenOfChronics = []
     steps, scores = [], []
+    ac_converter = ActionConverter(test_env)
     
     dn_ffw, ep_infos = select_chronics(env_path=json_path, case="14", eval=True)
     logger.info(f"dn_ffw loaded with {len(dn_ffw)} entries.")
@@ -174,17 +181,28 @@ def evaluate_agent(
             ffw = idx % 5
         else:
             # Select the hardest fast-forward window (where DN agent survived least)
-            ffw = int(
-                np.argmin(
-                    [
-                        dn_ffw[(chron_id, fw)][0]
-                        for fw in range(max_ffw)
-                        if (chron_id, fw) in dn_ffw and dn_ffw[(chron_id, fw)][0] >= 7
-                    ]
-                )
-            )
-            print(f"FFW selected for chronic {chron_id}: {ffw}")
+            # ffw = int(
+            #     np.argmin(
+            #         [
+            #             dn_ffw[(chron_id, fw)][0]
+            #             for fw in range(max_ffw)
+            #             if (chron_id, fw) in dn_ffw and dn_ffw[(chron_id, fw)][0] >= 7
+            #         ]
+            #     )
+            # )
+            # print(f"FFW selected for chronic {chron_id}: {ffw}")
+            candidates = [
+                (fw, dn_ffw[(chron_id, fw)][0])
+                for fw in range(max_ffw)
+                if (chron_id, fw) in dn_ffw and dn_ffw[(chron_id, fw)][0] >= 7
+            ]
 
+            if not candidates:
+                ffw = 0
+            else:
+                ffw = min(candidates, key=lambda x: x[1])[0]  # fw with smallest dn_step
+
+            print(f"FFW selected for chronic {chron_id}: {ffw}")
         # Get baseline performance
         dn_step = dn_ffw[(chron_id, ffw)][0]
         
@@ -192,7 +210,7 @@ def evaluate_agent(
         test_env.seed(59)
         test_env.set_id(chron_id)
         obs = test_env.reset()
-        agent.reset(obs)
+        #agent.reset(obs)
 
         def is_safe(obs):
             for ratio, limit in zip(obs.rho, test_env._thermal_limit_a):
@@ -217,7 +235,17 @@ def evaluate_agent(
         # Run episode
         while not done:
             # Get agent action
-            act = agent(obs)
+            safe_check = is_safe(obs)
+            sub_id = trainer.pick_sub_rule_based(np.array([0,1,2,3,4,5,6,8,9,10,11,12,13]), test_env.action_space, obs)
+            with_neighbors, _ = trainer.get_connected_substations(env=test_env, sub_id=sub_id, return_line_ids=True)
+            allowed_actions = trainer.find_action_ids(sub_id=with_neighbors)
+            act = agent.act_top_k(obs.to_vect(), allowed_action_ids=allowed_actions)
+            grid_action = ac_converter.act(act)
+            # if safe_check:
+            #     act = agent(obs.to_vect())
+            #     grid_action = ac_converter.act(act)
+            # else:
+            #     grid_action = test_env.action_space({})
             
             # Track topology changes and safety
             prev_topo = obs.topo_vect
@@ -225,7 +253,7 @@ def evaluate_agent(
             safe = np.append(safe, is_safe(obs))
             
             # Step environment
-            obs, reward, done, info = test_env.step(act)
+            obs, reward, done, info = test_env.step(grid_action)
             total_reward += reward
             alive_frame += 1
             
