@@ -611,14 +611,14 @@ class ActorCriticTrainer:
             survival_steps = t + 1          # because t is 0-indexed
             self.episode_lenths.append(survival_steps)
 
-        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="fine_tuned_actor_critic_reward.npy")
+        save_episode_rewards(self.episode_rewards, save_dir="G_JEPA\\episode_reward", filename="fine_tuned_actor_critic_reward.npy")
         np.save(os.path.join(self.episode_path, "fine_tuned_actor_critic_lengths.npy"),
                 np.array(self.episode_lenths, dtype=np.int32)) 
         np.save(os.path.join(self.episode_path, "fine_tuned_actor_critic_actions.npy"), np.array(actions, dtype=np.int32))
         np.save(os.path.join(self.episode_path, "fine_tuned_actor_critic_loss.npy"), np.array(self.actor_loss, dtype=np.float32))
         logger.info(f"reward saved at ICM\\episode_reward")
-        os.makedirs("ICM\\episode_reward", exist_ok=True)
-        np.save("ICM\\episode_reward\\fine_tuned_actor_critic_steps.npy", np.array(self.episode_lenths, dtype=int))
+        os.makedirs("G_JEPA\\episode_reward", exist_ok=True)
+        np.save("G_JEPA\\episode_reward\\fine_tuned_actor_critic_steps.npy", np.array(self.episode_lenths, dtype=int))
 
 
         os.makedirs(self.episode_path, exist_ok=True)

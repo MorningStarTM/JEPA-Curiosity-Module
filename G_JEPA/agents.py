@@ -87,6 +87,9 @@ class ActorCriticUP(nn.Module):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config
         self.NEG_INF = -1e9
+        self.temperature = self.config.get("temperature", 1.5)   # >1 = more exploration
+        self.epsilon     = self.config.get("epsilon", 0.10)      # 10% random
+
 
         self.affine = LinearResNet(
                 in_dim=self.config.get('input_dim', 192),
@@ -100,6 +103,7 @@ class ActorCriticUP(nn.Module):
         self.value_layer  = nn.Linear(256, 1)
 
         self.logprobs, self.state_values, self.rewards = [], [], []
+        self.entropies = []
 
         # Optional: safer initializations
         for m in self.modules():
@@ -161,6 +165,7 @@ class ActorCriticUP(nn.Module):
         action = dist.sample()
 
         self.logprobs.append(dist.log_prob(action).squeeze(-1))
+        self.entropies.append(dist.entropy().squeeze(-1))
         self.state_values.append(self.value_layer(h).squeeze(-1))
 
         return action.item()
@@ -168,21 +173,10 @@ class ActorCriticUP(nn.Module):
 
 
     def act_top_k(self, state_np, allowed_action_ids):
-        """
-        Sample an action ONLY from a subset of allowed action indices.
-
-        Args:
-            state_np: np.ndarray, shape (F,) or (B,F)
-            allowed_action_ids: list/tuple/1D tensor of allowed global action indices
-                e.g. [160, 161, 162]  (optionally include do-nothing id)
-
-        Returns:
-            int: sampled global action id (one of allowed_action_ids)
-        """
         x = torch.from_numpy(state_np).float().to(self.value_layer.weight.device)
         x = self._sanitize(x)
 
-        if x.dim() == 1:                      # ensure [B, F]
+        if x.dim() == 1:
             x = x.unsqueeze(0)
 
         h = self.affine(x)
@@ -190,37 +184,76 @@ class ActorCriticUP(nn.Module):
 
         logits = self.action_layer(h)         # (B, action_dim)
         logits = torch.nan_to_num(logits)
-        logits = logits - logits.max(dim=-1, keepdim=True).values
 
-        # --------- TOP-K / MASKING ----------
         action_dim = logits.size(-1)
         device = logits.device
 
+        # --- ensure tensor for allowed ids ---
         if not torch.is_tensor(allowed_action_ids):
             allowed_action_ids = torch.tensor(allowed_action_ids, dtype=torch.long, device=device)
         else:
             allowed_action_ids = allowed_action_ids.to(device=device, dtype=torch.long)
 
-        # Build mask: True for allowed actions
+        # Safety: if empty allowed list, fallback to full policy sampling
+        if allowed_action_ids.numel() == 0:
+            logits = logits - logits.max(dim=-1, keepdim=True).values
+            probs = torch.softmax(logits, dim=-1)
+            dist = Categorical(probs=probs)
+            action = dist.sample()
+            self.logprobs.append(dist.log_prob(action).squeeze(-1))
+            self.state_values.append(self.value_layer(h).squeeze(-1))
+            return action.item()
+
+        # ---------- EPSILON: uniform random among allowed ----------
+        eps = float(getattr(self, "epsilon", 0.10))
+        if torch.rand(1, device=device).item() < eps:
+            # pick uniformly from allowed_action_ids
+            idx = torch.randint(low=0, high=allowed_action_ids.numel(), size=(1,), device=device)
+            action = allowed_action_ids[idx]  # global action id
+
+            # so compute masked dist once (cheap)
+            allowed_mask = torch.zeros(action_dim, dtype=torch.bool, device=device)
+            allowed_mask[allowed_action_ids] = True
+            masked_logits = logits.masked_fill(~allowed_mask.unsqueeze(0).expand_as(logits), self.NEG_INF)
+
+            # temperature on masked logits
+            temp = float(getattr(self, "temperature", 1.5))
+            masked_logits = masked_logits / max(temp, 1e-6)
+            masked_logits = masked_logits - masked_logits.max(dim=-1, keepdim=True).values
+
+            probs = torch.softmax(masked_logits, dim=-1)
+            dist = Categorical(probs=probs)
+
+            self.logprobs.append(dist.log_prob(action).squeeze(-1))
+            self.entropies.append(dist.entropy().squeeze(-1))
+            self.state_values.append(self.value_layer(h).squeeze(-1))
+            return action.item()
+
+        # ---------- Normal policy sampling (masked) ----------
         allowed_mask = torch.zeros(action_dim, dtype=torch.bool, device=device)
         allowed_mask[allowed_action_ids] = True
-
-        # Expand mask to batch
         allowed_mask_b = allowed_mask.unsqueeze(0).expand_as(logits)
 
-        # Mask out disallowed actions
         masked_logits = logits.masked_fill(~allowed_mask_b, self.NEG_INF)
 
+        # ---------- TEMPERATURE ----------
+        temp = float(getattr(self, "temperature", 1.5))
+        masked_logits = masked_logits / max(temp, 1e-6)
+
+        # stable softmax
+        masked_logits = masked_logits - masked_logits.max(dim=-1, keepdim=True).values
         probs = torch.softmax(masked_logits, dim=-1)
 
-        # Safety: if something went wrong (e.g., empty allowed set), fallback to original probs
+        # Safety fallback
         if (not torch.isfinite(probs).all()) or torch.any(probs.sum(dim=-1) == 0):
+            logits = logits - logits.max(dim=-1, keepdim=True).values
             probs = torch.softmax(logits, dim=-1)
 
         dist = Categorical(probs=probs)
         action = dist.sample()  # (B,)
 
         self.logprobs.append(dist.log_prob(action).squeeze(-1))
+        self.entropies.append(dist.entropy().squeeze(-1))
         self.state_values.append(self.value_layer(h).squeeze(-1))
 
         return action.item()
@@ -250,7 +283,7 @@ class ActorCriticUP(nn.Module):
         value_loss  = F.smooth_l1_loss(values, returns)
     
         # crude entropy from logprobs; better is dist.entropy() if you also stored dist params
-        entropy = -(logprobs.exp() * logprobs).mean()
+        entropy = torch.stack(self.entropies).mean()
     
         return policy_loss + value_coef * value_loss - entropy_coef * entropy
 
@@ -259,6 +292,7 @@ class ActorCriticUP(nn.Module):
         del self.logprobs[:]
         del self.state_values[:]
         del self.rewards[:]
+        del self.entropies[:]
 
     def save_checkpoint(self, optimizer:optim=None, filename="actor_critic_checkpoint.pth"):
         """Save model + optimizer for exact training resumption."""
